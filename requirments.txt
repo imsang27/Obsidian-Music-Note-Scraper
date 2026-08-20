@@ -3,4 +3,4 @@ requests
 beautifulsoup4
 google-genai
 python-dotenv
-duckduckgo-search
+DDGS

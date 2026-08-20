@@ -9,7 +9,7 @@ from bs4 import BeautifulSoup
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from google import genai
-from duckduckgo_search import DDGS  # 🌐 다중 웹 검색을 위해 추가된 라이브러리
+from ddgs import DDGS
 
 # .env 파일 불러오기
 load_dotenv()
@@ -33,7 +33,7 @@ def get_search_query(song_title):
         print(f"  -> ❌ 원곡 추출 중 오류 발생: {e}")
         return song_title
 
-# --- 3. 다중 소스 가사 스크래핑 함수 (피드백 출력 강화) ---
+# --- 3. 다중 소스 가사 스크래핑 함수 ---
 def scrape_multiple_sources(query):
     print(f"  -> 🔍 [진행 중] '{query}' 여러 사이트에서 가사를 수집하고 있습니다...")
     results_text = ""
@@ -46,31 +46,28 @@ def scrape_multiple_sources(query):
         headers = {"User-Agent": "Mozilla/5.0"}
         
         response = requests.get(search_url, headers=headers)
-        search_data = response.json()
-        
-        song_url = None
-        for section in search_data.get('response', {}).get('sections', []):
-            if section.get('hits'):
-                song_url = section['hits'][0]['result']['url']
-                break
+        if response.status_code == 200:
+            search_data = response.json()
+            song_url = None
+            for section in search_data.get('response', {}).get('sections', []):
+                if section.get('hits'):
+                    song_url = section['hits'][0]['result']['url']
+                    break
+                    
+            if song_url:
+                page_response = requests.get(song_url, headers=headers)
+                soup = BeautifulSoup(page_response.text, 'html.parser')
+                lyrics_divs = soup.find_all('div', class_=lambda x: x and 'Lyrics__Container' in x)
+                genius_lyrics = "".join([div.get_text(separator='\n').strip() + "\n\n" for div in lyrics_divs]).strip()
                 
-        if song_url:
-            page_response = requests.get(song_url, headers=headers)
-            soup = BeautifulSoup(page_response.text, 'html.parser')
-            lyrics_divs = soup.find_all('div', class_=lambda x: x and 'Lyrics__Container' in x)
-            genius_lyrics = "".join([div.get_text(separator='\n').strip() + "\n\n" for div in lyrics_divs]).strip()
-            
-            if genius_lyrics:
-                # 터미널 실시간 피드백
-                print(f"\n  📝 [가사{lyric_count}] 출처: Genius (원문 가사 전문)")
-                
-                # AI에게 전달할 텍스트에 출처 표기
-                results_text += f"\n[가사{lyric_count}] 출처: Genius\n{genius_lyrics}\n"
-                lyric_count += 1
+                if genius_lyrics:
+                    print(f"\n  📝 [가사{lyric_count}] 출처: Genius (원문 가사 전문)")
+                    results_text += f"\n[가사{lyric_count}] 출처: Genius\n{genius_lyrics}\n"
+                    lyric_count += 1
     except Exception as e:
-        print(f"    - Genius 검색 실패: {e}")
+        print(f"    - Genius 접속 대기 중 (일시적 차단 또는 에러)")
 
-    # 소스 2: DuckDuckGo 웹 전체 검색 (블로그, 커뮤니티 등)
+    # 소스 2: DuckDuckGo 웹 전체 검색
     try:
         ddgs = DDGS()
         ddg_results = ddgs.text(f"{query} 가사 번역", max_results=3)
@@ -79,11 +76,8 @@ def scrape_multiple_sources(query):
                 title = r.get('title', '제목 없음')
                 body = r.get('body', '내용 없음')
                 
-                # 터미널 실시간 피드백 (내용이 길 수 있어 미리보기만 출력해요)
                 print(f"\n  📝 [가사{lyric_count}] 출처: 웹 검색 ({title})")
                 print(f"  - 내용 미리보기: {body[:60]}...")
-                
-                # AI에게 전달할 텍스트에 출처 표기
                 results_text += f"\n[가사{lyric_count}] 출처: 웹 검색 ({title})\n{body}\n"
                 lyric_count += 1
     except Exception as e:
@@ -91,7 +85,7 @@ def scrape_multiple_sources(query):
         
     return results_text if results_text.strip() else "수집된 가사 정보가 없습니다."
 
-# --- 4. AI 데이터 생성 및 파싱 함수 ---
+# --- 4. AI 데이터 생성 및 파싱 함수 (강력한 통제 프롬프트 적용) ---
 def generate_ai_content(song_title, raw_lyrics):
     print(f"  -> 🤖 [진행 중] AI가 수집된 가사를 분석하고 교차 검증하는 중...")
     
@@ -101,21 +95,33 @@ def generate_ai_content(song_title, raw_lyrics):
 
 [입력 데이터]
 - 곡 제목: {song_title}
-- 다중 수집된 가사 참고 자료 (오류가 섞여 있을 수 있음):
+- 다중 수집된 가사 참고 자료:
 {raw_lyrics}
 
 [요청 사항]
-1. 속성(Properties): 값이 없다면 절대 지우지 말고 `키:: ` 형태로 비워두세요.
-   - lyricist, composer: 사람 이름은 `원어명 (영문명)` 형태로 적으세요. 단, 원어명이 이미 영어라면 괄호 없이 한 번만 적으세요 (예: Heavenz). 여러 명이면 쉼표(,)로 구분하세요.
+1. 속성(Properties): 값이 없다면 절대 지우지 말고 `키:: ` 형태로 비워두세요. **(주의: 절대 한 줄에 여러 키를 붙여 쓰지 말고, 반드시 각각 줄바꿈 하세요.)**
+   - lyricist, composer: 사람 이름은 `원어명 (영문명)` 형태로 적으세요. 원어명이 이미 영어라면 괄호 없이 한 번만 적으세요 (예: Heavenz). 여러 명이면 쉼표(,)로 구분하세요.
    - genre: 반드시 '영어'로 작성하세요. 여러 개면 쉼표(,)로 구분하세요.
    - mood: '신남', '몽환', '슬픔'처럼 반드시 명사형 단어로 적고, 여러 개면 쉼표(,)로 구분하세요.
-   - description: 이 곡에 대한 1~2문장의 짧고 간결한 곡 설명을 적으세요. (타이업 정보 제외)
-   - tags: 타이업(애니/영화/게임 등) 매체명은 이곳에 적어주세요. 영어가 아니라면 한국어로 번역하고, 띄어쓰기는 언더바(_)로 대체하세요. genre나 mood와 중복되는 단어는 제외하고 쉼표(,)로 구분하세요.
+   - description: 이 곡에 대한 1~2문장의 짧고 간결한 곡 설명을 적으세요.
+   - tags: 타이업 매체명 등을 적되, 띄어쓰기는 언더바(_)로 대체하세요. 절대 하이픈(-)이나 특수기호를 넣지 마세요.
 2. 텍스트 작성: 핵심 서사와 음악적 특징은 마크다운 기호(- 등)를 절대 쓰지 말고, 3~4개의 문장을 각각 줄바꿈(엔터)으로만 구분해서 작성하세요.
 3. 가사 통합 및 정확도 향상 (매우 중요): 
-   - 제공된 여러 소스의 가사(Genius, 웹 참고 자료)와 당신의 내부 음악 데이터베이스를 모두 교차 검증하세요.
-   - 웹 스크래핑 찌꺼기(crumbs, 코러스 등)나 곡과 일치하지 않는 가사는 완벽하게 걸러내고 가장 정확한 가사만 번역하세요.
-   - 일본어 가사인 경우: 원문 한 줄, 독음 한 줄(괄호 없이), 해석 한 줄을 교차하세요.
+   - 현재 제공된 [다중 수집된 가사 참고 자료]는 웹 검색의 짧은 '미리보기 조각(Snippet)'일 가능성이 높습니다.
+   - 제공된 자료가 짧거나 엉뚱한 곡이라면 **완전히 무시**하세요. 
+   - 반드시 당신의 내장 데이터베이스에 있는 '{song_title}'의 **실제 원곡 전체 가사**를 끝까지 정확하게 꺼내서 작성하세요. 절대 다른 노래를 섞거나 창작하지 마세요.
+   - 일본어 가사인 경우: 원문 한 줄, 독음 한 줄, 해석 한 줄을 교차하세요.
+   - **독음(발음)에는 절대 괄호()를 사용하지 마세요.**
+   
+   (O) 올바른 가사 작성 예시:
+   本当の事
+   혼토우노 코토
+   진실
+
+   (X) 틀린 가사 작성 예시 (절대 금지):
+   本当の事
+   (혼토우노 코토)
+   진실
 
 [출력 양식]
 vocal:: 
@@ -146,16 +152,23 @@ tags::
         print(f"  -> ❌ AI 생성 중 오류 발생: {e}")
         return ""
 
+# --- 5. 속성값 밀림 원천 차단 함수 ---
 def extract_property(key, text):
     match = re.search(rf'^{key}::\s*([^\n]*)', text, re.MULTILINE)
-    return match.group(1).strip() if match else ""
+    if match:
+        val = match.group(1).strip()
+        # 만약 AI가 실수로 'album:: lyricist::' 처럼 여러 속성을 한 줄에 출력했다면, 밀림을 방지하기 위해 빈칸 처리
+        if "::" in val:
+            return ""
+        return val
+    return ""
 
 def extract_section(tag, text):
     pattern = rf'\[{tag}\]\s*\n?(.*?)(?=\n\[|$)'
     match = re.search(pattern, text, re.DOTALL)
     return match.group(1).strip() if match else ""
 
-# --- 5. 파일 변경 처리 및 업데이트 ---
+# --- 6. 파일 변경 처리 및 업데이트 ---
 class ObsidianNoteHandler(FileSystemEventHandler):
     def on_created(self, event):
         if event.is_directory or not event.src_path.endswith('.md'):
@@ -181,21 +194,28 @@ class ObsidianNoteHandler(FileSystemEventHandler):
                 
             print(f"\n🚀 [작업 시작] '{title}' 정보 수집 및 업데이트를 진행합니다.")
             
-            # --- 실시간 피드백: 옵시디언 파일에 진행 상태 남기기 ---
-            status_msg = "⏳ **AI가 인터넷 검색을 통해 곡 정보와 가사를 수집하는 중입니다... 잠시만 기다려주세요!**\n\n"
+            status_msg = "> ⏳ **AI가 인터넷 검색을 통해 곡 정보와 가사를 수집하는 중입니다... 잠시만 기다려주세요!**\n\n"
             if status_msg not in content:
+                if content.startswith("---"):
+                    end_idx = content.find("\n---", 3)
+                    if end_idx != -1:
+                        insert_pos = end_idx + 4
+                        content = content[:insert_pos] + "\n\n" + status_msg + content[insert_pos:]
+                    else:
+                        content = status_msg + content
+                else:
+                    content = status_msg + content
+                    
                 with open(filepath, 'w', encoding='utf-8') as f:
-                    f.write(status_msg + content)
+                    f.write(content)
 
             search_query = get_search_query(title)
             raw_lyrics = scrape_multiple_sources(search_query)
             ai_result = generate_ai_content(title, raw_lyrics)
             
-            # 상태 메시지 삭제
-            content = content.replace(status_msg, "")
+            content = content.replace("\n\n" + status_msg, "").replace(status_msg, "")
             
             if not ai_result:
-                # 실패하더라도 파일은 원래 상태로 되돌려 둡니다.
                 with open(filepath, 'w', encoding='utf-8') as f:
                     f.write(content)
                 return
@@ -222,14 +242,14 @@ class ObsidianNoteHandler(FileSystemEventHandler):
             # 3. 태그(tags) 추가하기
             tags_val = extract_property('tags', ai_result)
             if tags_val:
-                tags_list = [t.strip() for t in tags_val.split(',') if t.strip()]
+                tags_list = [re.sub(r'^[-#\s]*', '', t).strip() for t in tags_val.split(',') if t.strip()]
                 if tags_list:
                     tags_match = re.search(r'(tags:\n(?:  - .*\n)*)', content)
                     if tags_match:
                         existing_tags = tags_match.group(1)
                         new_tags_str = ""
                         for t in tags_list:
-                            if f"- {t}" not in existing_tags:
+                            if t and f"- {t}" not in existing_tags:
                                 new_tags_str += f"  - {t}\n"
                         if new_tags_str:
                             content = content.replace(existing_tags, existing_tags + new_tags_str)
@@ -263,7 +283,7 @@ class ObsidianNoteHandler(FileSystemEventHandler):
         except Exception as e:
             print(f"❌ 노트 업데이트 중 오류 발생: {e}")
 
-# --- 6. 메인 실행부 ---
+# --- 7. 메인 실행부 ---
 if __name__ == "__main__":
     target_folder = os.environ.get("OBSIDIAN_FOLDER_PATH") 
     
