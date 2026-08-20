@@ -193,7 +193,7 @@ class ObsidianNoteHandler(FileSystemEventHandler):
                         content = re.sub(rf'^({key}:).*$', rf'\1 "{val}"', content, flags=re.MULTILINE)
                         
             # 2. 리스트 속성 채우기
-            list_keys = ['lyricist', 'composer', 'genre', 'mood']
+            list_keys = ['lyricist', 'composer', 'arranger', 'genre', 'mood']
             for key in list_keys:
                 if re.search(rf'^{key}:\s*(?:(?:\"\")|(?:\'\')|(?:\s*)|(?:\[\]))$', content, re.MULTILINE):
                     val = extract_property(key, ai_result)

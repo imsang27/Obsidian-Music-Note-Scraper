@@ -62,6 +62,7 @@ group::
 album:: 
 lyricist:: 
 composer:: 
+arranger:: 
 original_song:: 
 original_artist:: 
 genre:: 
