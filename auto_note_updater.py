@@ -275,8 +275,25 @@ if __name__ == "__main__":
     try:
         while True:
             choice = input().strip()
-            
-            if choice.lower() == 'q':
+
+            if choice == '2':
+                while True:
+                    filepath = input("\n[수동 복구 모드] 복구할 파일의 전체 경로를 입력해 주세요 (취소는 'c'):\n").strip()
+                    
+                    if filepath.lower() == 'c':
+                        print("수동 복구를 취소했습니다. 계속해서 폴더를 감시합니다.\n")
+                        break
+                        
+                    filepath = filepath.strip('"').strip("'")
+                    
+                    if os.path.exists(filepath) and filepath.endswith('.md'):
+                        handler.update_note(filepath)
+                        print("✅ 수동 복구 완료! 다시 폴더 감시 상태로 돌아갑니다.\n")
+                        break
+                    else:
+                        print("❌ 파일을 찾을 수 없거나 마크다운(.md) 파일이 아닙니다. 경로를 다시 확인해 주세요.")
+                        
+            elif choice.lower() == 'q':
                 print("\n스크립트를 종료합니다.")
                 observer.stop()
                 break
