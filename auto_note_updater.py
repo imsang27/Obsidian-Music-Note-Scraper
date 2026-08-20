@@ -33,19 +33,19 @@ def get_search_query(song_title):
         print(f"  -> ❌ 원곡 추출 중 오류 발생: {e}")
         return song_title
 
-# --- 3. 다중 소스 가사 스크래핑 함수 ---
+# --- 3. 다중 소스 가사 스크래핑 함수 (본문 직접 접속 기능 추가) ---
 def scrape_multiple_sources(query):
     print(f"  -> 🔍 [진행 중] '{query}' 여러 사이트에서 가사를 수집하고 있습니다...")
     results_text = ""
     lyric_count = 1
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     
     # 소스 1: Genius 사이트 검색
     try:
         encoded_query = urllib.parse.quote(query + " lyrics")
         search_url = f"https://genius.com/api/search/multi?per_page=1&q={encoded_query}"
-        headers = {"User-Agent": "Mozilla/5.0"}
         
-        response = requests.get(search_url, headers=headers)
+        response = requests.get(search_url, headers=headers, timeout=5)
         if response.status_code == 200:
             search_data = response.json()
             song_url = None
@@ -55,7 +55,7 @@ def scrape_multiple_sources(query):
                     break
                     
             if song_url:
-                page_response = requests.get(song_url, headers=headers)
+                page_response = requests.get(song_url, headers=headers, timeout=5)
                 soup = BeautifulSoup(page_response.text, 'html.parser')
                 lyrics_divs = soup.find_all('div', class_=lambda x: x and 'Lyrics__Container' in x)
                 genius_lyrics = "".join([div.get_text(separator='\n').strip() + "\n\n" for div in lyrics_divs]).strip()
@@ -64,22 +64,37 @@ def scrape_multiple_sources(query):
                     print(f"\n  📝 [가사{lyric_count}] 출처: Genius (원문 가사 전문)")
                     results_text += f"\n[가사{lyric_count}] 출처: Genius\n{genius_lyrics}\n"
                     lyric_count += 1
-    except Exception as e:
+    except Exception:
         print(f"    - Genius 접속 대기 중 (일시적 차단 또는 에러)")
 
-    # 소스 2: DuckDuckGo 웹 전체 검색
+    # 소스 2: DuckDuckGo 검색 후 -> 사이트 직접 접속해서 긁어오기 (핵심 개선)
     try:
         ddgs = DDGS()
-        ddg_results = ddgs.text(f"{query} 가사 번역", max_results=3)
+        ddg_results = ddgs.text(f"{query} 가사 발음", max_results=3)
         if ddg_results:
             for r in ddg_results:
                 title = r.get('title', '제목 없음')
-                body = r.get('body', '내용 없음')
+                link = r.get('href', r.get('link', ''))
                 
-                print(f"\n  📝 [가사{lyric_count}] 출처: 웹 검색 ({title})")
-                print(f"  - 내용 미리보기: {body[:60]}...")
-                results_text += f"\n[가사{lyric_count}] 출처: 웹 검색 ({title})\n{body}\n"
-                lyric_count += 1
+                if link:
+                    print(f"    -> 🔗 '{title}' 사이트 본문에 접속 시도 중...")
+                    try:
+                        # 1. 검색된 블로그나 웹사이트 URL로 직접 접속
+                        page_resp = requests.get(link, headers=headers, timeout=5)
+                        soup_web = BeautifulSoup(page_resp.text, 'html.parser')
+                        
+                        # 2. 본문(body) 안에 있는 모든 텍스트를 추출
+                        if soup_web.body:
+                            body_text = soup_web.body.get_text(separator='\n', strip=True)
+                            
+                            # 3. 사이트 내용이 너무 길면 AI 토큰 초과가 발생하므로 앞부분 5000자만 자름
+                            if body_text:
+                                body_text = body_text[:5000]
+                                print(f"  📝 [가사{lyric_count}] 출처: 웹 스크래핑 성공 ({title})")
+                                results_text += f"\n[가사{lyric_count}] 출처: {link}\n{body_text}\n"
+                                lyric_count += 1
+                    except Exception:
+                        print(f"    - 사이트 직접 접속 실패: {link}")
     except Exception as e:
         print(f"    - 웹 검색 실패: {e}")
         
@@ -113,15 +128,35 @@ def generate_ai_content(song_title, raw_lyrics):
    - 일본어 가사인 경우: 원문 한 줄, 독음 한 줄, 해석 한 줄을 교차하세요.
    - **독음(발음)에는 절대 괄호()를 사용하지 마세요.**
    
-   (O) 올바른 가사 작성 예시:
+   (O) 올바른 가사 작성 예시 1:
    本当の事
    혼토우노 코토
    진실
 
-   (X) 틀린 가사 작성 예시 (절대 금지):
+   (X) 틀린 가사 작성 예시 1 (독음에 괄호 절대 금지):
    本当の事
    (혼토우노 코토)
    진실
+
+   (O) 올바른 가사 작성 예시 2:
+   過ぎていく現在に抱きしめられている
+   스기테유쿠 이마니 다키시메라레테이루
+   지나가는 현재에 안겨져있어
+   
+   (X) 틀린 가사 작성 예시 2 (첫 줄 원문에 요미가나 괄호 포함 절대 금지):
+   過ぎていく現在(いま)に抱きしめられている
+   스기테유쿠 이마니 다키시메라레테이루
+   지나가는 현재에 안겨져있어
+
+   (O) 올바른 가사 작성 예시 3:
+   今日を噛み締めよう
+   쿄오오 카미시메요오
+   오늘을 곱씹자
+   
+   (X) 틀린 가사 작성 예시 3 (원문과 발음 불일치, 뜬금없는 영어/오역 찌꺼기 혼용 절대 금지):
+   今日を bite しまおう
+   쿄오오 카미시메테이요오
+   오늘을 곱씹자
 
 [출력 양식]
 vocal:: 
