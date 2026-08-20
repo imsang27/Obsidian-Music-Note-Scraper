@@ -11,6 +11,8 @@ from watchdog.events import FileSystemEventHandler
 from google import genai
 from ddgs import DDGS
 
+from prompt import get_music_analysis_prompt
+
 # .env 파일 불러오기
 load_dotenv()
 
@@ -100,88 +102,15 @@ def scrape_multiple_sources(query):
         
     return results_text if results_text.strip() else "수집된 가사 정보가 없습니다."
 
-# --- 4. AI 데이터 생성 및 파싱 함수 (강력한 통제 프롬프트 적용) ---
+# --- 4. AI 데이터 생성 및 파싱 함수 (외부 프롬프트 파일 적용) ---
 def generate_ai_content(song_title, raw_lyrics):
     print(f"  -> 🤖 [진행 중] AI가 수집된 가사를 분석하고 교차 검증하는 중...")
     
-    prompt = f"""
-당신은 깊이 있는 음악 평론가이자 전문 번역가입니다.
-제공된 곡 제목과 여러 소스에서 수집된 가사 데이터를 바탕으로 아래 양식을 복사하여 빈칸을 채워주세요.
-
-[입력 데이터]
-- 곡 제목: {song_title}
-- 다중 수집된 가사 참고 자료:
-{raw_lyrics}
-
-[요청 사항]
-1. 속성(Properties): 값이 없다면 절대 지우지 말고 `키:: ` 형태로 비워두세요. **(주의: 절대 한 줄에 여러 키를 붙여 쓰지 말고, 반드시 각각 줄바꿈 하세요.)**
-   - lyricist, composer: 사람 이름은 `원어명 (영문명)` 형태로 적으세요. 원어명이 이미 영어라면 괄호 없이 한 번만 적으세요 (예: Heavenz). 여러 명이면 쉼표(,)로 구분하세요.
-   - genre: 반드시 '영어'로 작성하세요. 여러 개면 쉼표(,)로 구분하세요.
-   - mood: '신남', '몽환', '슬픔'처럼 반드시 명사형 단어로 적고, 여러 개면 쉼표(,)로 구분하세요.
-   - description: 이 곡에 대한 1~2문장의 짧고 간결한 곡 설명을 적으세요.
-   - tags: 타이업 매체명 등을 적되, 띄어쓰기는 언더바(_)로 대체하세요. 절대 하이픈(-)이나 특수기호를 넣지 마세요.
-2. 텍스트 작성: 핵심 서사와 음악적 특징은 마크다운 기호(- 등)를 절대 쓰지 말고, 3~4개의 문장을 각각 줄바꿈(엔터)으로만 구분해서 작성하세요.
-3. 가사 통합 및 정확도 향상 (매우 중요): 
-   - 현재 제공된 [다중 수집된 가사 참고 자료]는 웹 검색의 짧은 '미리보기 조각(Snippet)'일 가능성이 높습니다.
-   - 제공된 자료가 짧거나 엉뚱한 곡이라면 **완전히 무시**하세요. 
-   - 반드시 당신의 내장 데이터베이스에 있는 '{song_title}'의 **실제 원곡 전체 가사**를 끝까지 정확하게 꺼내서 작성하세요. 절대 다른 노래를 섞거나 창작하지 마세요.
-   - 일본어 가사인 경우: 원문 한 줄, 독음 한 줄, 해석 한 줄을 교차하세요.
-   - **독음(발음)에는 절대 괄호()를 사용하지 마세요.**
-   
-   (O) 올바른 가사 작성 예시 1:
-   本当の事
-   혼토우노 코토
-   진실
-
-   (X) 틀린 가사 작성 예시 1 (독음에 괄호 절대 금지):
-   本当の事
-   (혼토우노 코토)
-   진실
-
-   (O) 올바른 가사 작성 예시 2:
-   過ぎていく現在に抱きしめられている
-   스기테유쿠 이마니 다키시메라레테이루
-   지나가는 현재에 안겨져있어
-   
-   (X) 틀린 가사 작성 예시 2 (첫 줄 원문에 요미가나 괄호 포함 절대 금지):
-   過ぎていく現在(いま)に抱きしめられている
-   스기테유쿠 이마니 다키시메라레테이루
-   지나가는 현재에 안겨져있어
-
-   (O) 올바른 가사 작성 예시 3:
-   今日を噛み締めよう
-   쿄오오 카미시메요오
-   오늘을 곱씹자
-   
-   (X) 틀린 가사 작성 예시 3 (원문과 발음 불일치, 뜬금없는 영어/오역 찌꺼기 혼용 절대 금지):
-   今日を bite しまおう
-   쿄오오 카미시메테이요오
-   오늘을 곱씹자
-
-[출력 양식]
-vocal:: 
-group:: 
-album:: 
-lyricist:: 
-composer:: 
-original_song:: 
-original_artist:: 
-genre:: 
-mood:: 
-description:: 
-tags:: 
-
-[story]
-(여기에 핵심 서사 작성, 불릿 기호 없이 줄바꿈으로만 구분)
-
-[features]
-(여기에 음악적 특징 작성, 불릿 기호 없이 줄바꿈으로만 구분)
-
-[lyrics]
-(여기에 통합 가사 작성)
-"""
+    # prompt.py에서 프롬프트를 불러옵니다
+    prompt_text = get_music_analysis_prompt(song_title, raw_lyrics)
+    
     try:
-        response = client.models.generate_content(model=MODEL_NAME, contents=prompt)
+        response = client.models.generate_content(model=MODEL_NAME, contents=prompt_text)
         return response.text
     except Exception as e:
         print(f"  -> ❌ AI 생성 중 오류 발생: {e}")
