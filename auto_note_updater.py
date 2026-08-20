@@ -263,37 +263,50 @@ if __name__ == "__main__":
     print("\n==================================")
     print(" 🎵 음악 노트 자동화 스크립트 🎵 ")
     print("==================================")
-    print("1. 폴더 자동 감시 모드 (기본)")
-    print("2. 특정 파일 수동 복구 모드 (빈칸만 채우기)")
     
-    choice = input("\n원하시는 모드의 번호를 입력하세요 (1 또는 2): ").strip()
+    # 1. 스크립트 시작과 동시에 옵저버(1번 감시 모드) 즉시 실행!
+    observer = Observer()
+    observer.schedule(handler, target_folder, recursive=True)
+    observer.start()
     
-    if choice == '2':
+    print(f"🎧 [{target_folder}]\n템플릿 감시를 자동으로 시작했습니다.")
+    print("💡 감시 중 특정 파일을 수동 복구하려면 언제든 '2'를 입력하고 엔터를 누르세요. (종료는 'q' 입력)")
+    
+    try:
         while True:
-            filepath = input("\n복구할 파일의 전체 경로를 붙여넣어 주세요 (취소하려면 'q' 입력):\n").strip()
+            # 백그라운드에서 감시가 돌아가는 동안, 메인 화면은 사용자의 입력을 조용히 기다립니다.
+            choice = input().strip()
             
-            if filepath.lower() == 'q':
-                print("수동 복구를 취소하고 프로그램을 종료합니다.")
+            if choice == '2':
+                # 올바른 경로를 입력할 때까지 반복해서 묻는 내부 루프
+                while True:
+                    filepath = input("\n[수동 복구 모드] 복구할 파일명(또는 전체 경로)을 입력해 주세요 (취소는 'c'):\n").strip()
+                    
+                    if filepath.lower() == 'c':
+                        print("수동 복구를 취소했습니다. 계속해서 폴더를 감시합니다.\n")
+                        break  # 내부 루프를 깨고 메인 대기 화면으로 자연스럽게 복귀
+                        
+                    filepath = filepath.strip('"').strip("'")
+                    
+                    # 상대 경로(파일명)만 입력해도 절대 경로로 변환
+                    if not os.path.isabs(filepath):
+                        filepath = os.path.join(target_folder, filepath)
+
+                    if os.path.exists(filepath) and filepath.endswith('.md'):
+                        handler.update_note(filepath)
+                        print("✅ 수동 복구 완료! 다시 폴더 감시 상태로 돌아갑니다.\n")
+                        break  # 성공적으로 마쳤으니 내부 루프 탈출
+                    else:
+                        print("❌ 파일을 찾을 수 없거나 마크다운(.md) 파일이 아닙니다. 경로를 다시 확인해 주세요.")
+                        # break가 없으므로 곧바로 input() 창이 다시 떠서 재시도 가능!
+
+            elif choice.lower() == 'q':
+                print("\n스크립트를 종료합니다.")
+                observer.stop()
                 break
                 
-            filepath = filepath.strip('"').strip("'")
-            
-            if os.path.exists(filepath) and filepath.endswith('.md'):
-                handler.update_note(filepath)
-                break
-            else:
-                print("❌ 파일을 찾을 수 없거나 마크다운(.md) 파일이 아닙니다. 경로를 다시 확인해 주세요.")
-    else:
-        observer = Observer()
-        observer.schedule(handler, target_folder, recursive=True)
-        observer.start()
+    except KeyboardInterrupt:
+        print("\n스크립트를 종료합니다.")
+        observer.stop()
         
-        print(f"\n🎧 [{target_folder}] 템플릿 감시를 시작했어요. (종료하려면 Ctrl+C)")
-        
-        try:
-            while True:
-                time.sleep(1)
-        except KeyboardInterrupt:
-            print("\n감시를 종료할게요.")
-            observer.stop()
-        observer.join()
+    observer.join()
