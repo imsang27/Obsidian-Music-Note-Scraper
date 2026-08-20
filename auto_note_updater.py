@@ -264,35 +264,42 @@ if __name__ == "__main__":
     print(" 🎵 음악 노트 자동화 스크립트 🎵 ")
     print("==================================")
     
-    # 1. 백그라운드 감시 즉시 시작
+    # 1. 스크립트 시작과 동시에 옵저버(1번 감시 모드) 즉시 실행!
     observer = Observer()
     observer.schedule(handler, target_folder, recursive=True)
     observer.start()
     
     print(f"🎧 [{target_folder}]\n템플릿 감시를 자동으로 시작했습니다.")
-    print("💡 감시 중 특정 파일을 수동 복구하려면 언제든 '2'를 입력하고 엔터를 누르세요. (종료는 'q')")
+    print("💡 감시 중 특정 파일을 수동 복구하려면 언제든 '2'를 입력하고 엔터를 누르세요. (종료는 'q' 입력)")
     
     try:
         while True:
+            # 백그라운드에서 감시가 돌아가는 동안, 메인 화면은 사용자의 입력을 조용히 기다립니다.
             choice = input().strip()
-
+            
             if choice == '2':
+                # 올바른 경로를 입력할 때까지 반복해서 묻는 내부 루프
                 while True:
-                    filepath = input("\n[수동 복구 모드] 복구할 파일의 전체 경로를 입력해 주세요 (취소는 'c'):\n").strip()
+                    filepath = input("\n[수동 복구 모드] 복구할 파일명(또는 전체 경로)을 입력해 주세요 (취소는 'c'):\n").strip()
                     
                     if filepath.lower() == 'c':
                         print("수동 복구를 취소했습니다. 계속해서 폴더를 감시합니다.\n")
-                        break
+                        break  # 내부 루프를 깨고 메인 대기 화면으로 자연스럽게 복귀
                         
                     filepath = filepath.strip('"').strip("'")
                     
+                    # 상대 경로(파일명)만 입력해도 절대 경로로 변환
+                    if not os.path.isabs(filepath):
+                        filepath = os.path.join(target_folder, filepath)
+
                     if os.path.exists(filepath) and filepath.endswith('.md'):
                         handler.update_note(filepath)
                         print("✅ 수동 복구 완료! 다시 폴더 감시 상태로 돌아갑니다.\n")
-                        break
+                        break  # 성공적으로 마쳤으니 내부 루프 탈출
                     else:
                         print("❌ 파일을 찾을 수 없거나 마크다운(.md) 파일이 아닙니다. 경로를 다시 확인해 주세요.")
-                        
+                        # break가 없으므로 곧바로 input() 창이 다시 떠서 재시도 가능!
+
             elif choice.lower() == 'q':
                 print("\n스크립트를 종료합니다.")
                 observer.stop()
