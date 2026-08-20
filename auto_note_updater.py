@@ -263,37 +263,26 @@ if __name__ == "__main__":
     print("\n==================================")
     print(" 🎵 음악 노트 자동화 스크립트 🎵 ")
     print("==================================")
-    print("1. 폴더 자동 감시 모드 (기본)")
-    print("2. 특정 파일 수동 복구 모드 (빈칸만 채우기)")
     
-    choice = input("\n원하시는 모드의 번호를 입력하세요 (1 또는 2): ").strip()
+    # 1. 백그라운드 감시 즉시 시작
+    observer = Observer()
+    observer.schedule(handler, target_folder, recursive=True)
+    observer.start()
     
-    if choice == '2':
+    print(f"🎧 [{target_folder}]\n템플릿 감시를 자동으로 시작했습니다.")
+    print("💡 감시 중 특정 파일을 수동 복구하려면 언제든 '2'를 입력하고 엔터를 누르세요. (종료는 'q')")
+    
+    try:
         while True:
-            filepath = input("\n복구할 파일의 전체 경로를 붙여넣어 주세요 (취소하려면 'q' 입력):\n").strip()
+            choice = input().strip()
             
-            if filepath.lower() == 'q':
-                print("수동 복구를 취소하고 프로그램을 종료합니다.")
+            if choice.lower() == 'q':
+                print("\n스크립트를 종료합니다.")
+                observer.stop()
                 break
                 
-            filepath = filepath.strip('"').strip("'")
-            
-            if os.path.exists(filepath) and filepath.endswith('.md'):
-                handler.update_note(filepath)
-                break
-            else:
-                print("❌ 파일을 찾을 수 없거나 마크다운(.md) 파일이 아닙니다. 경로를 다시 확인해 주세요.")
-    else:
-        observer = Observer()
-        observer.schedule(handler, target_folder, recursive=True)
-        observer.start()
+    except KeyboardInterrupt:
+        print("\n스크립트를 종료합니다.")
+        observer.stop()
         
-        print(f"\n🎧 [{target_folder}] 템플릿 감시를 시작했어요. (종료하려면 Ctrl+C)")
-        
-        try:
-            while True:
-                time.sleep(1)
-        except KeyboardInterrupt:
-            print("\n감시를 종료할게요.")
-            observer.stop()
-        observer.join()
+    observer.join()
