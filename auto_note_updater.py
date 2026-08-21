@@ -26,14 +26,32 @@ def get_search_query(song_title):
     print(f"  -> 🔎 [진행 중] '{song_title}'에서 원곡 정보를 파악하는 중...")
     prompt = f"다음 유튜브 영상 제목에서 '원곡 가수'와 '원곡 제목'을 추출해서 '가수 제목' 형태로만 출력해줘. 커버곡이라도 원곡을 기준으로 해. 부가 설명 없이 딱 검색어만 출력해.\n제목: {song_title}"
     
-    try:
-        response = client.models.generate_content(model=MODEL_NAME, contents=prompt)
-        query = response.text.strip()
-        print(f"  -> 🎯 [완료] 검색어 확정: {query}")
-        return query
-    except Exception as e:
-        print(f"  -> ❌ 원곡 추출 중 오류 발생: {e}")
-        return song_title
+    max_retries = 3
+    for attempt in range(1, max_retries + 1):
+        try:
+            response = client.models.generate_content(model=MODEL_NAME, contents=prompt)
+            query = response.text.strip()
+            print(f"  -> 🎯 [완료] 검색어 확정: {query}")
+            return query
+        except Exception as e:
+            error_msg = str(e)
+            if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
+                if attempt < max_retries:
+                    # 제미나이가 요구하는 대기 시간을 에러 메시지에서 추출 (없으면 기본 60초)
+                    delay = 60
+                    delay_match = re.search(r'retry in ([\d\.]+)s', error_msg)
+                    if delay_match:
+                        delay = int(float(delay_match.group(1))) + 2 # 넉넉하게 2초 추가
+                    
+                    print(f"  -> ⏳ [API 대기] 원곡 추출 한도 도달. {delay}초 후 재시도합니다...")
+                    time.sleep(delay)
+                else:
+                    print("  -> ❌ [실패] 원곡 추출 재시도 횟수 초과.")
+                    return song_title
+            else:
+                print(f"  -> ❌ 원곡 추출 중 오류 발생: {error_msg}")
+                return song_title
+    return song_title
 
 # --- 3. 다중 소스 가사 스크래핑 함수 (본문 직접 접속 기능 추가) ---
 def scrape_multiple_sources(query):
@@ -102,19 +120,17 @@ def scrape_multiple_sources(query):
         
     return results_text if results_text.strip() else "수집된 가사 정보가 없습니다."
 
-# --- 4. AI 데이터 생성 및 파싱 함수 (외부 프롬프트 파일 적용) ---
+# --- 4. AI 데이터 생성 및 파싱 함수 ---
 def generate_ai_content(song_title, raw_lyrics):
+
     # AI 분석 호출 로직 부분
     max_retries = 3  # 최대 재시도 횟수
-    retry_delay = 30 # 대기 시간 (초)
-
     for attempt in range(1, max_retries + 1):
         try:
             print(f"  -> 🤖 [진행 중] AI가 수집된 가사를 분석하고 교차 검증하는 중...")
-            
-            # prompt.py에서 프롬프트를 불러옵니다
+
+            # prompt.py에서 프롬프트를 불러옴
             prompt_text = get_music_analysis_prompt(song_title, raw_lyrics)
-    
             response = client.models.generate_content(model=MODEL_NAME, contents=prompt_text)
             return response.text # 성공하면 루프 탈출
         
@@ -124,15 +140,20 @@ def generate_ai_content(song_title, raw_lyrics):
             # 429 에러(한도 초과)인지 확인
             if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
                 if attempt < max_retries:
-                    print(f"  -> ⏳ [API 대기] 제미나이 호출 한도에 도달했습니다. {retry_delay}초 후 재시도합니다...")
-                    time.sleep(retry_delay) # 30초 대기 후 다시 for문 처음(try)으로 돌아감
+                    delay = 60
+                    delay_match = re.search(r'retry in ([\d\.]+)s', error_msg)
+                    if delay_match:
+                        delay = int(float(delay_match.group(1))) + 2
+                        
+                    print(f"  -> ⏳ [API 대기] 제미나이 분석 한도 도달. {delay}초 후 재시도합니다...")
+                    time.sleep(delay) # 대기 후 다시 for문 처음(try)으로 돌아감
                 else:
                     print("  -> ❌ [실패] 재시도 횟수를 초과했습니다. 잠시 후 '2'번(수동 복구 모드)을 이용해 주세요.")
-                    return # 또는 상황에 맞게 중단 처리
+                    return None # 또는 상황에 맞게 중단 처리
             else:
                 # 429가 아닌 전혀 다른 에러일 경우 바로 중단
                 print(f"  -> ❌ [오류] AI 생성 중 알 수 없는 오류가 발생했습니다: {error_msg}")
-                return
+                return None
 
 # --- 5. 속성값 밀림 원천 차단 함수 ---
 def extract_property(key, text):
