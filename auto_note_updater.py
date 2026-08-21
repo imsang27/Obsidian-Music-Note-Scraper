@@ -203,28 +203,28 @@ class ObsidianNoteHandler(FileSystemEventHandler):
         try:
             with open(filepath, 'r', encoding='utf-8') as f:
                 content = f.read()
-                
+
             # 1. 큰따옴표가 있든 없든 제목 부분만 깔끔하게 가져옴
             title_match = re.search(r'title:\s*"?([^"\n]+)"?', content)
+            title = title_match.group(1).strip() if title_match else None
             
-            if title_match:
-                title = title_match.group(1).strip()
-                # 2. 맨 앞의 [태그] 부분만 깔끔하게 지음
-                # (예: "[with. HONEYZ] 아야" -> "아야")
-                title = re.sub(r'^\[.*?\]\s*', '', title)
-            else:
-                title = None
-            
-            if not title:
-                # 3. 대체 로직(fallback): URL 꼬리가 붙지 않게 괄호 안쪽만 정확히 조준
+            # 2. 제목이 비었거나 URL 주소가 제목으로 잡혀버렸을 경우 (대체 로직)
+            if not title or "http" in title:
                 fallback_match = re.search(r'\[([^\]]+)\]\(https://www.youtube.com', content)
-                title = fallback_match.group(1).strip() if fallback_match else "알 수 없는 곡"
+                title = fallback_match.group(1).strip() if fallback_match else None
+                
+            # 3. 제목을 못 찾았거나 URL 찌꺼기면 '파일명'을 사용!
+            if not title or "http" in title:
+                # filepath에서 파일명만 추출 (예: C:\...\Young Girl A.md -> Young Girl A)
+                title = os.path.splitext(os.path.basename(filepath))[0]
 
             if title:
                 # 맨 앞의 [태그] 부분만 깔끔하게 지음
                 title = re.sub(r'^\[.*?\]\s*', '', title)
                 # 뒤에 잘못 딸려온 마크다운 링크 꼬리 무조건 싹둑 자르기
                 title = title.split('](http')[0].strip()
+                # 혹시라도 남아있는 (http...) 형태의 URL 찌꺼기 완벽 제거
+                title = re.sub(r'\(?https?://[^\s)]+\)?', '', title).strip()
                 
             print(f"\n🚀 [작업 시작] '{title}' 정보 수집 및 업데이트를 진행합니다.")
             
