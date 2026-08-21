@@ -11,7 +11,7 @@ from watchdog.events import FileSystemEventHandler
 from google import genai
 from ddgs import DDGS
 
-from prompt import get_music_analysis_prompt
+from prompt import get_music_analysis_prompt, get_search_query_prompt
 
 # .env 파일 불러오기
 load_dotenv()
@@ -37,8 +37,10 @@ def get_retry_delay(error_msg, default_delay=60):
 # --- 2. 원곡 정보 추출 함수 ---
 def get_search_query(song_title):
     print(f"  -> 🔎 [진행 중] '{song_title}'에서 원곡 정보를 파악하는 중...")
-    prompt = f"다음 유튜브 영상 제목에서 '원곡 가수'와 '원곡 제목'을 추출해서 '가수 제목' 형태로만 출력해줘. 커버곡이라도 원곡을 기준으로 해. 부가 설명 없이 딱 검색어만 출력해.\n제목: {song_title}"
     
+    # 프롬프트를 외부 파일에서 불러옴
+    prompt = get_search_query_prompt(song_title)
+
     max_retries = 3
     for attempt in range(1, max_retries + 1):
         error_msg = "" # 에러 메시지 초기화

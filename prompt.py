@@ -1,3 +1,20 @@
+def get_search_query_prompt(song_title):
+    return f"""
+다음 곡 제목에서 '원곡 가수'와 '원곡 제목'을 정확히 추출해서 '원곡가수 원곡제목' 형태로만 출력해줘.
+커버곡일 경우, 부른 사람(커버 가수)의 이름은 무조건 빼고 원곡 정보만 남겨야 해.
+(부가 설명이나 마침표 없이 딱 검색어만 출력할 것)
+
+[분석 예시]
+입력: 아야 - 감그레이 (ZUTOMAYO)
+출력: ZUTOMAYO 감그레이
+
+입력: [Cover] 아이돌(アイドル) - YOASOBI / 다즈비(DAZBEE)
+출력: YOASOBI 아이돌
+
+입력: {song_title}
+출력:
+"""
+
 def get_music_analysis_prompt(song_title, raw_lyrics):
     return f"""
 당신은 깊이 있는 음악 평론가이자 전문 번역가입니다.
