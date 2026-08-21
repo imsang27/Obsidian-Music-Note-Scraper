@@ -376,8 +376,9 @@ if __name__ == "__main__":
                 observer.stop()
                 break
                 
-    except KeyboardInterrupt:
-        print("\n스크립트를 종료합니다.")
+    # Ctrl+C (KeyboardInterrupt) 또는 Ctrl+Z (EOFError) 입력 시 에러 없이 안전하게 종료
+    except (KeyboardInterrupt, EOFError):
+        print("\n스크립트를 안전하게 종료합니다.")
         observer.stop()
         
     observer.join()
