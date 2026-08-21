@@ -104,17 +104,35 @@ def scrape_multiple_sources(query):
 
 # --- 4. AI 데이터 생성 및 파싱 함수 (외부 프롬프트 파일 적용) ---
 def generate_ai_content(song_title, raw_lyrics):
-    print(f"  -> 🤖 [진행 중] AI가 수집된 가사를 분석하고 교차 검증하는 중...")
+    # AI 분석 호출 로직 부분
+    max_retries = 3  # 최대 재시도 횟수
+    retry_delay = 30 # 대기 시간 (초)
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            print(f"  -> 🤖 [진행 중] AI가 수집된 가사를 분석하고 교차 검증하는 중...")
+            
+            # prompt.py에서 프롬프트를 불러옵니다
+            prompt_text = get_music_analysis_prompt(song_title, raw_lyrics)
     
-    # prompt.py에서 프롬프트를 불러옵니다
-    prompt_text = get_music_analysis_prompt(song_title, raw_lyrics)
-    
-    try:
-        response = client.models.generate_content(model=MODEL_NAME, contents=prompt_text)
-        return response.text
-    except Exception as e:
-        print(f"  -> ❌ AI 생성 중 오류 발생: {e}")
-        return ""
+            response = client.models.generate_content(model=MODEL_NAME, contents=prompt_text)
+            return response.text # 성공하면 루프 탈출
+        
+        except Exception as e:
+            error_msg = str(e)
+            
+            # 429 에러(한도 초과)인지 확인
+            if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
+                if attempt < max_retries:
+                    print(f"  -> ⏳ [API 대기] 제미나이 호출 한도에 도달했습니다. {retry_delay}초 후 재시도합니다...")
+                    time.sleep(retry_delay) # 30초 대기 후 다시 for문 처음(try)으로 돌아감
+                else:
+                    print("  -> ❌ [실패] 재시도 횟수를 초과했습니다. 잠시 후 '2'번(수동 복구 모드)을 이용해 주세요.")
+                    return # 또는 상황에 맞게 중단 처리
+            else:
+                # 429가 아닌 전혀 다른 에러일 경우 바로 중단
+                print(f"  -> ❌ [오류] AI 생성 중 알 수 없는 오류가 발생했습니다: {error_msg}")
+                return
 
 # --- 5. 속성값 밀림 원천 차단 함수 ---
 def extract_property(key, text):
