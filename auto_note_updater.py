@@ -193,14 +193,17 @@ class ObsidianNoteHandler(FileSystemEventHandler):
 
             search_query = get_search_query(title)
             raw_lyrics = scrape_multiple_sources(search_query)
+            # 함수를 호출해서 쓰는 부분
             ai_result = generate_ai_content(title, raw_lyrics)
             
             content = content.replace("\n\n" + status_msg, "").replace(status_msg, "")
             
+            # 텅 빈 값(None)이 돌아왔을 때의 안전장치
             if not ai_result:
+                print("❌ AI 분석에 실패하여 파일 업데이트를 건너뜁니다.")
                 with open(filepath, 'w', encoding='utf-8') as f:
                     f.write(content)
-                return
+                return  # (루프 안이라면 continue)
             
             # 1. 문자열 속성 채우기
             str_keys = ['vocal', 'group', 'album', 'original_song', 'original_artist', 'description']
