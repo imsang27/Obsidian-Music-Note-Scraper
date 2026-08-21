@@ -217,6 +217,12 @@ class ObsidianNoteHandler(FileSystemEventHandler):
                 # 3. 대체 로직(fallback): URL 꼬리가 붙지 않게 괄호 안쪽만 정확히 조준
                 fallback_match = re.search(r'\[([^\]]+)\]\(https://www.youtube.com', content)
                 title = fallback_match.group(1).strip() if fallback_match else "알 수 없는 곡"
+
+            if title:
+                # 맨 앞의 [태그] 부분만 깔끔하게 지음
+                title = re.sub(r'^\[.*?\]\s*', '', title)
+                # 뒤에 잘못 딸려온 마크다운 링크 꼬리 무조건 싹둑 자르기
+                title = title.split('](http')[0].strip()
                 
             print(f"\n🚀 [작업 시작] '{title}' 정보 수집 및 업데이트를 진행합니다.")
             
