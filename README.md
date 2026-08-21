@@ -7,8 +7,11 @@ Google Gemini API와 다중 웹 검색을 활용하여, 옵시디언(Obsidian) �
 ## ✨ 주요 기능
 * **실시간 템플릿 감지**: `watchdog`을 활용하여 넓은 범주의 옵시디언 음악 폴더(하위 폴더 포함) 내 마크다운 파일 생성을 실시간으로 감지합니다.
 * **다중 소스 가사 수집**: Genius API와 DuckDuckGo 웹 검색을 교차 활용하여 가사 검색 정확도를 극대화합니다.
+* **강력한 텍스트 전처리**: 파일명이나 템플릿에 마크다운 URL 링크나 대괄호(`[...]`) 태그가 섞여 있어도 완벽하게 제거하여 정확한 곡 제목만 추출합니다.
 * **AI 기반 자동 완성**: Gemini API가 수집된 가사를 분석하여 곡의 메타데이터, 핵심 서사, 음악적 특징을 옵시디언 Frontmatter 및 본문 양식에 맞춰 완벽하게 덮어씁니다.
+* **스마트 태그 생성**: 검색 편의성을 위해 타이업 매체 형식(매체/작품명)을 준수하고, 비영어권 아티스트 이름을 영문 로마자로 자동 변환하여 태그를 생성합니다.
 * **다국어 가사 통합**: 원문/독음/해석을 깔끔하게 교차 정렬합니다.
+* **스마트 Fallback 및 예외 처리 (강조)**: 429 한도 초과 에러 발생 시 지정된 예비 모델로 멈춤 없이 즉시 전환(Cascading)하며, 필요시 에러 메시지를 분석해 스마트하게 대기한 후 스크래핑을 완료합니다.
 * **스마트 복구 모드**: 빈칸만 똑똑하게 찾아 채워 넣는 수동 복구 모드를 지원합니다.
 
 ## 🚀 설치 및 설정 방법
@@ -21,7 +24,10 @@ Google Gemini API와 다중 웹 검색을 활용하여, 옵시디언(Obsidian) �
     ```
 
 2. **환경 변수 설정**
-프로젝트 폴더 내에 `.env` 파일을 생성하고 아래 양식에 맞게 작성합니다. (`./.env.example` 파일을 참고하세요.)
+프로젝트 폴더 내에 `.env` 파일을 생성하고 아래 양식에 맞게 작성합니다.  
+([.env.semple](./.env.example) 파일을 참고하세요.)
+
+    💡 사용 가능한 최신 API 모델 및 무료 한도 확인: [https://aistudio.google.com/rate-limit](https://aistudio.google.com/rate-limit)
     ```env
     # Gemini API 키 (Google AI Studio 발급)
     GEMINI_API_KEY="your_api_key_here"
@@ -29,8 +35,8 @@ Google Gemini API와 다중 웹 검색을 활용하여, 옵시디언(Obsidian) �
     # 옵시디언 음악 폴더 경로 (예시)
     OBSIDIAN_FOLDER_PATH="C:\Users\username\Documents\Obsidian\Music"
 
-    # 사용할 AI 모델
-    GEMINI_MODEL="gemini-3.5-flash"
+    # 사용할 AI 모델을 순위별로 쉼표(,)로 구분하여 작성 (Fallback 적용)
+    GEMINI_FALLBACK_MODELS="gemini-3.5-flash-lite, gemini-3.1-flash-lite"
     ```
 
 ## 💻 사용 방법
