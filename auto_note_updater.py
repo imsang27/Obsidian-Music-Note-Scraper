@@ -188,19 +188,20 @@ class ObsidianNoteHandler(FileSystemEventHandler):
             with open(filepath, 'r', encoding='utf-8') as f:
                 content = f.read()
                 
-            # 1. title: "..." 안에 있는 텍스트 전체를 가져옴
-            title_match = re.search(r'title:\s*"(.*?)"', content)
+            # 1. 큰따옴표가 있든 없든 제목 부분만 깔끔하게 가져옴
+            title_match = re.search(r'title:\s*"?([^"\n]+)"?', content)
             
             if title_match:
                 title = title_match.group(1).strip()
-                # 2. 맨 앞의 [태그] 부분만 깔끔하게 지움
+                # 2. 맨 앞의 [태그] 부분만 깔끔하게 지음
                 # (예: "[with. HONEYZ] 아야" -> "아야")
                 title = re.sub(r'^\[.*?\]\s*', '', title)
             else:
                 title = None
             
             if not title:
-                fallback_match = re.search(r'!\[(.*?)\]\(https://www.youtube.com', content)
+                # 3. 대체 로직(fallback): URL 꼬리가 붙지 않게 괄호 안쪽만 정확히 조준
+                fallback_match = re.search(r'\[([^\]]+)\]\(https://www.youtube.com', content)
                 title = fallback_match.group(1).strip() if fallback_match else "알 수 없는 곡"
                 
             print(f"\n🚀 [작업 시작] '{title}' 정보 수집 및 업데이트를 진행합니다.")
