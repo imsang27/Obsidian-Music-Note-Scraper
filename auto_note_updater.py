@@ -204,30 +204,25 @@ class ObsidianNoteHandler(FileSystemEventHandler):
             with open(filepath, 'r', encoding='utf-8') as f:
                 content = f.read()
 
-            # 1. 큰따옴표가 있든 없든 제목 부분만 깔끔하게 가져옴
-            title_match = re.search(r'title:\s*"?([^"\n]+)"?', content)
-            title = title_match.group(1).strip() if title_match else None
+            # 파일명을 1순위로 추출 
+            # 예: "C:\...\椎名もた(siinamota) - Young Girl A 少女A.md" -> "椎名もた(siinamota) - Young Girl A 少女A"
+            title = os.path.splitext(os.path.basename(filepath))[0].strip()
             
-            # 2. 제목이 비었거나 URL 주소가 제목으로 잡혀버렸을 경우 (대체 로직)
-            if not title or "http" in title:
-                fallback_match = re.search(r'\[([^\]]+)\]\(https://www.youtube.com', content)
-                title = fallback_match.group(1).strip() if fallback_match else None
-                
-            # 3. 제목을 못 찾았거나 URL 찌꺼기면 '파일명'을 사용!
-            if not title or "http" in title:
-                # filepath에서 파일명만 추출 (예: C:\...\Young Girl A.md -> Young Girl A)
-                title = os.path.splitext(os.path.basename(filepath))[0]
-
+            # 파일명 기반 텍스트 다듬기
             if title:
-                # 맨 앞의 [태그] 부분만 깔끔하게 지음
+                # 1. 맨 앞의 [태그] 부분 지우기 (예: "[with. HONEYZ] 아야" -> "아야")
                 title = re.sub(r'^\[.*?\]\s*', '', title)
-                # 뒤에 잘못 딸려온 마크다운 링크 꼬리 무조건 싹둑 자르기
+                # 2. 혹시라도 파일명에 URL이 섞였을 경우를 대비한 강력한 꼬리 자르기
                 title = title.split('](http')[0].strip()
-                # 혹시라도 남아있는 (http...) 형태의 URL 찌꺼기 완벽 제거
                 title = re.sub(r'\(?https?://[^\s)]+\)?', '', title).strip()
                 
+            # 텅 빈 파일명이 추출되는 최악의 경우에 대비한 안전장치
+            if not title:
+                print("❌ 유효한 곡 제목(파일명)을 찾을 수 없어 업데이트를 건너뜁니다.")
+                return
+
             print(f"\n🚀 [작업 시작] '{title}' 정보 수집 및 업데이트를 진행합니다.")
-            
+
             status_msg = "> ⏳ **AI가 인터넷 검색을 통해 곡 정보와 가사를 수집하는 중입니다... 잠시만 기다려주세요!**\n\n"
             if status_msg not in content:
                 if content.startswith("---"):
