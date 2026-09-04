@@ -104,7 +104,22 @@ def scrape_multiple_sources(query):
     # 소스 2: DuckDuckGo 검색 후 -> 사이트 직접 접속해서 긁어오기 (핵심 개선)
     try:
         ddgs = DDGS()
-        ddg_results = ddgs.text(f"{query} 가사 발음", max_results=3)
+        ddg_results = None
+        
+        # 1차 시도: 깐깐하게 '가사 발음'까지 검색
+        try:
+            ddg_results = ddgs.text(f"{query} 가사 발음", max_results=3)
+        except Exception:
+            pass # 못 찾으면 조용히 넘어감
+            
+        # 2차 시도: 1차에서 실패했거나 결과가 0개면, '발음'을 빼고 넓게 재검색!
+        if not ddg_results:
+            print(f"    - ⚠️ '{query} 가사 발음' 검색 실패. '{query} 가사'로 재검색합니다...")
+            try:
+                ddg_results = ddgs.text(f"{query} 가사", max_results=3)
+            except Exception:
+                pass
+                
         if ddg_results:
             for r in ddg_results:
                 title = r.get('title', '제목 없음')
