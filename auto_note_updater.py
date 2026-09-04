@@ -11,7 +11,7 @@ from watchdog.events import FileSystemEventHandler
 from google import genai
 from ddgs import DDGS
 
-from prompt import get_music_analysis_prompt, get_search_query_prompt
+from prompt import get_search_query_prompt, get_music_analysis_prompt, get_lyrics_only_prompt
 
 # .env 파일 불러오기
 load_dotenv()
@@ -213,7 +213,7 @@ class ObsidianNoteHandler(FileSystemEventHandler):
         
         time.sleep(2) 
         self.update_note(filepath)
-
+    
     def update_note(self, filepath):
         try:
             with open(filepath, 'r', encoding='utf-8') as f:
@@ -329,6 +329,63 @@ class ObsidianNoteHandler(FileSystemEventHandler):
             
         except Exception as e:
             print(f"❌ 노트 업데이트 중 오류 발생: {e}")
+    
+    def update_lyrics_only(self, filepath):
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                content = f.read()
+
+            title = os.path.splitext(os.path.basename(filepath))[0].strip()
+            if title:
+                title = re.sub(r'^\[.*?\]\s*', '', title)
+                title = title.split('](http')[0].strip()
+                title = re.sub(r'\(?https?://[^\s)]+\)?', '', title).strip()
+
+            if not title:
+                print("❌ 파일명에서 곡 제목을 찾을 수 없어요.")
+                return
+
+            lyrics_match = re.search(r'(``` title=".*?"\n)([\s\S]*?)(```)', content)
+            if not lyrics_match:
+                print("❌ 가사 코드 블록(``` title=...)을 찾을 수 없어요.")
+                return
+
+            print(f"\n🎤 [가사 단독 수정 시작] '{title}' 가사를 다시 수집합니다.")
+            search_query = get_search_query(title)
+            raw_lyrics = scrape_multiple_sources(search_query)
+
+            # 가사 전용 프롬프트로 AI 호출
+            prompt_text = get_lyrics_only_prompt(title, raw_lyrics)
+            ai_result = None
+            for current_model in FALLBACK_MODELS:
+                try:
+                    print(f"  -> 🤖 가사 재생성 중... (모델: {current_model})")
+                    resp = client.models.generate_content(model=current_model, contents=prompt_text)
+                    ai_result = resp.text
+                    break
+                except Exception as e:
+                    print(f"    - ⚠️ [{current_model}] 오류: {e}")
+                    continue
+
+            if not ai_result:
+                print("❌ 가사 재생성에 실패했어요.")
+                return
+
+            new_lyrics = extract_section('lyrics', ai_result)
+            if not new_lyrics:
+                print("❌ AI 응답에서 가사 섹션을 추출하지 못했어요.")
+                return
+
+            # 기존 가사 내용 유무와 상관없이 새 가사로 덮어쓰기
+            content = content.replace(lyrics_match.group(0), f"{lyrics_match.group(1)}{new_lyrics}\n{lyrics_match.group(3)}")
+
+            with open(filepath, 'w', encoding='utf-8') as f:
+                f.write(content)
+
+            print(f"✨ [가사 수정 완료] [{title}] 가사 블록이 새로 갱신되었어요!")
+
+        except Exception as e:
+            print(f"❌ 가사 수정 중 오류 발생: {e}")
 
 # --- 7. 메인 실행부 ---
 if __name__ == "__main__":
@@ -353,8 +410,8 @@ if __name__ == "__main__":
     observer.start()
     
     print(f"🎧 [{target_folder}]\n템플릿 감시를 자동으로 시작했습니다.")
-    print("💡 감시 중 특정 파일을 수동 복구하려면 언제든 '2'를 입력하고 엔터를 누르세요. (종료는 'q' 입력)")
-    
+    print("💡 복구 모드 선택: 전체 수동 복구('2') | 가사만 다시 수정('3') | 종료('q')")
+
     try:
         while True:
             # 백그라운드에서 감시가 돌아가는 동안, 메인 화면은 사용자의 입력을 조용히 기다립니다.
@@ -382,6 +439,23 @@ if __name__ == "__main__":
                     else:
                         print("❌ 파일을 찾을 수 없거나 마크다운(.md) 파일이 아닙니다. 경로를 다시 확인해 주세요.")
                         # break가 없으므로 곧바로 input() 창이 다시 떠서 재시도 가능!
+
+            elif choice == '3':
+                while True:
+                    filepath = input("\n[가사 전용 수정] 수정할 파일명(또는 경로)을 입력하세요 (취소: 'c'):\n").strip()
+                    if filepath.lower() == 'c':
+                        print("가사 수정을 취소했습니다. 감시 모드로 돌아갑니다.\n")
+                        break
+
+                    filepath = filepath.strip('"').strip("'")
+                    if not os.path.isabs(filepath):
+                        filepath = os.path.join(target_folder, filepath)
+
+                    if os.path.exists(filepath) and filepath.endswith('.md'):
+                        handler.update_lyrics_only(filepath)
+                        break
+                    else:
+                        print("❌ 파일을 찾을 수 없거나 마크다운(.md) 파일이 아니에요.")
 
             elif choice.lower() == 'q':
                 print("\n스크립트를 종료합니다.")
