@@ -5,6 +5,7 @@ import threading
 import queue
 from pathlib import Path
 from note_format import ready, song_title, render_note, atomic_save, extract_property, extract_section
+from playlist_queue import configured_queue, playlist_menu
 from dotenv import load_dotenv
 
 import time
@@ -247,7 +248,7 @@ class ObsidianNoteHandler(FileSystemEventHandler):
                     break
                 try:
                     content = Path(path).read_text(encoding='utf-8')
-                    if ready(content) and path not in self.attempted:
+                    if ready(content) and path not in self.attempted and not is_playlist_managed(content):
                         self.update_note(path)
                 except OSError:
                     pass
@@ -296,6 +297,9 @@ class ObsidianNoteHandler(FileSystemEventHandler):
                 if not result or stop_event.is_set():
                     return False
                 updated = render_note(content, result, lyrics_only)
+                if updated == content:
+                    print('채울 수 있는 AI 결과가 없습니다. 원본을 유지합니다.')
+                    return False
                 if b'\r\n' in original:
                     updated = updated.replace('\n', '\r\n')
                 atomic_save(path, original, updated.encode('utf-8'))
@@ -357,6 +361,12 @@ def watch_obsidian(observer):
 console_lines = queue.Queue()
 
 
+def is_playlist_managed(content):
+    # Selection-generated notes are processed only by explicit selection/manual repair.
+    from note_format import split_note
+    return split_note(content)[1].get('playlist_managed') is True
+
+
 def read_console():
     while True:
         line = sys.stdin.readline()
@@ -399,6 +409,7 @@ if __name__ == "__main__":
     if not os.path.exists(target_folder):
         os.makedirs(target_folder)
         
+    playlist_service = configured_queue(target_folder, stop_event.is_set)
     handler = ObsidianNoteHandler()
     
     print("\n==================================")
@@ -412,7 +423,7 @@ if __name__ == "__main__":
     threading.Thread(target=watch_obsidian, args=(observer,), daemon=True).start()
 
     print(f"🎧 [{target_folder}]\n템플릿 감시를 자동으로 시작했습니다.")
-    print("💡 복구 모드 선택: 전체 수동 복구('2') | 가사만 다시 수정('3') | 종료('q')")
+    print("💡 전체 수동 복구(2) | 가사 재수정(3) | 새 곡 확인(4) | 대기 곡 선택·생성(5) | 종료(q)")
 
     try:
         while True:
@@ -457,6 +468,9 @@ if __name__ == "__main__":
                         break
                     else:
                         print("❌ 파일을 찾을 수 없거나 마크다운(.md) 파일이 아니에요.")
+
+            elif choice in ('4', '5'):
+                playlist_menu(playlist_service, choice, read_input, handler.update_note)
 
             elif choice.lower() == 'q':
                 print("\n스크립트를 종료합니다.")
