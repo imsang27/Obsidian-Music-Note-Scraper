@@ -4,3 +4,4 @@ beautifulsoup4
 google-genai
 python-dotenv
 DDGS
+PyYAML>=6.0,<7

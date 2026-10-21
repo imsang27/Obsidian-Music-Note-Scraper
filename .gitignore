@@ -1,4 +1,6 @@
-# Environments
 .env
 .venv/
+__pycache__/
 *.pyc
+scraper.log
+.review-deps/

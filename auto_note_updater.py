@@ -1,4 +1,10 @@
 import os
+import sys
+import subprocess
+import threading
+import queue
+from pathlib import Path
+from note_format import ready, song_title, render_note, atomic_save, extract_property, extract_section
 from dotenv import load_dotenv
 
 import time
@@ -24,7 +30,18 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 fallback_models_str = os.environ.get("GEMINI_FALLBACK_MODELS", "gemini-3.5-flash-lite,gemini-3.1-flash-lite")
 FALLBACK_MODELS = [model.strip() for model in fallback_models_str.split(",") if model.strip()]
 
-client = genai.Client(api_key=GEMINI_API_KEY)
+client = None
+stop_event = threading.Event()
+
+
+def generate_text(prompt, model):
+    global client
+    if client is None:
+        if not GEMINI_API_KEY or not FALLBACK_MODELS:
+            raise ValueError("GEMINI_API_KEY와 GEMINI_FALLBACK_MODELS 설정을 확인하세요.")
+        client = genai.Client(api_key=GEMINI_API_KEY, http_options={"timeout": 60000})
+    return client.models.generate_content(model=model, contents=prompt)
+
 
 # --- 1-1. API 대기 시간 추출 헬퍼 함수 ---
 def get_retry_delay(error_msg, default_delay=60):
@@ -46,7 +63,7 @@ def get_search_query(song_title):
         error_msg = "" # 에러 메시지 초기화
         for current_model in FALLBACK_MODELS:
             try:
-                response = client.models.generate_content(model=current_model, contents=prompt)
+                response = generate_text(prompt, current_model)
                 query = response.text.strip()
                 print(f"  -> 🎯 [완료] 검색어 확정: {query} (사용 모델: {current_model})")
                 return query
@@ -62,7 +79,9 @@ def get_search_query(song_title):
         if attempt < max_retries:
             delay = get_retry_delay(error_msg)
             print(f"  -> ⏳ [API 대기] 모든 모델 호출 실패. {delay}초 후 처음부터 재시도합니다...")
-            time.sleep(delay)
+            stop_event.wait(delay)
+            if stop_event.is_set():
+                return None
 
     print("  -> ❌ [실패] 원곡 추출 재시도 횟수 초과.")
     return song_title
@@ -84,12 +103,13 @@ def scrape_multiple_sources(query):
             search_data = response.json()
             song_url = None
             for section in search_data.get('response', {}).get('sections', []):
-                if section.get('hits'):
+                if section.get('type') == 'song' and section.get('hits'):
                     song_url = section['hits'][0]['result']['url']
                     break
                     
             if song_url:
                 page_response = requests.get(song_url, headers=headers, timeout=5)
+                page_response.raise_for_status()
                 soup = BeautifulSoup(page_response.text, 'html.parser')
                 lyrics_divs = soup.find_all('div', class_=lambda x: x and 'Lyrics__Container' in x)
                 genius_lyrics = "".join([div.get_text(separator='\n').strip() + "\n\n" for div in lyrics_divs]).strip()
@@ -130,11 +150,14 @@ def scrape_multiple_sources(query):
                     try:
                         # 1. 검색된 블로그나 웹사이트 URL로 직접 접속
                         page_resp = requests.get(link, headers=headers, timeout=5)
+                        page_resp.raise_for_status()
                         soup_web = BeautifulSoup(page_resp.text, 'html.parser')
                         
                         # 2. 본문(body) 안에 있는 모든 텍스트를 추출
+                        for junk in soup_web(['script', 'style', 'nav', 'footer', 'header']):
+                            junk.decompose()
                         if soup_web.body:
-                            body_text = soup_web.body.get_text(separator='\n', strip=True)
+                            body_text = (soup_web.find('article') or soup_web.find('main') or soup_web.body).get_text(separator='\n', strip=True)
                             
                             # 3. 사이트 내용이 너무 길면 AI 토큰 초과가 발생하므로 앞부분 5000자만 자름
                             if body_text:
@@ -147,7 +170,7 @@ def scrape_multiple_sources(query):
     except Exception as e:
         print(f"    - 웹 검색 실패: {e}")
         
-    return results_text if results_text.strip() else "수집된 가사 정보가 없습니다."
+    return results_text.strip()
 
 # --- 4. AI 데이터 생성 및 파싱 함수 ---
 def generate_ai_content(song_title, raw_lyrics):
@@ -162,7 +185,7 @@ def generate_ai_content(song_title, raw_lyrics):
 
                 # prompt.py에서 프롬프트를 불러옴
                 prompt_text = get_music_analysis_prompt(song_title, raw_lyrics)
-                response = client.models.generate_content(model=current_model, contents=prompt_text)
+                response = generate_text(prompt_text, current_model)
                 return response.text # 성공하면 루프 탈출
             
             except Exception as e:
@@ -181,216 +204,194 @@ def generate_ai_content(song_title, raw_lyrics):
         if attempt < max_retries:
             delay = get_retry_delay(error_msg)
             print(f"  -> ⏳ [API 대기] 모든 모델 분석 실패. {delay}초 후 처음부터 재시도합니다...")
-            time.sleep(delay)
+            stop_event.wait(delay)
+            if stop_event.is_set():
+                return None
 
     print("  -> ❌ [실패] 재시도 횟수를 초과했습니다. 잠시 후 '2'번(수동 복구 모드)을 이용해 주세요.")
     return None # 또는 상황에 맞게 중단 처리
 
-# --- 5. 속성값 밀림 원천 차단 함수 ---
-def extract_property(key, text):
-    match = re.search(rf'^{key}::\s*([^\n]*)', text, re.MULTILINE)
-    if match:
-        val = match.group(1).strip()
-        # 만약 AI가 실수로 'album:: lyricist::' 처럼 여러 속성을 한 줄에 출력했다면, 밀림을 방지하기 위해 빈칸 처리
-        if "::" in val:
-            return ""
-        return val
-    return ""
-
-def extract_section(tag, text):
-    pattern = rf'\[{tag}\]\s*\n?(.*?)(?=\n\[|$)'
-    match = re.search(pattern, text, re.DOTALL)
-    return match.group(1).strip() if match else ""
-
-# --- 6. 파일 변경 처리 및 업데이트 ---
+# --- 파일 감시: 이벤트 콜백은 예약만 하고 단일 작업자가 처리합니다. ---
 class ObsidianNoteHandler(FileSystemEventHandler):
+    def __init__(self):
+        self.guard = threading.Lock()
+        self.pending = {}
+        self.attempted = {}
+        self.locks = {}
+        self.worker = threading.Thread(target=self._run, daemon=False)
+        self.worker.start()
+
+    def schedule(self, path):
+        if path.lower().endswith('.md') and not stop_event.is_set():
+            with self.guard:
+                self.pending[os.path.normcase(os.path.abspath(path))] = time.monotonic() + 2
+
     def on_created(self, event):
-        if event.is_directory or not event.src_path.endswith('.md'):
-            return
-            
-        filepath = event.src_path
-        print(f"\n📄 [새 노트 감지됨] {filepath}")
-        
-        time.sleep(2) 
-        self.update_note(filepath)
-    
-    def update_note(self, filepath):
-        try:
-            with open(filepath, 'r', encoding='utf-8') as f:
-                content = f.read()
+        if not event.is_directory:
+            self.schedule(event.src_path)
 
-            # 파일명을 1순위로 추출 
-            # 예: "C:\...\椎名もた(siinamota) - Young Girl A 少女A.md" -> "椎名もた(siinamota) - Young Girl A 少女A"
-            title = os.path.splitext(os.path.basename(filepath))[0].strip()
-            
-            # 파일명 기반 텍스트 다듬기
-            if title:
-                # 1. 맨 앞의 [태그] 부분 지우기 (예: "[with. HONEYZ] 아야" -> "아야")
-                title = re.sub(r'^\[.*?\]\s*', '', title)
-                # 2. 혹시라도 파일명에 URL이 섞였을 경우를 대비한 강력한 꼬리 자르기
-                title = title.split('](http')[0].strip()
-                title = re.sub(r'\(?https?://[^\s)]+\)?', '', title).strip()
-                
-            # 텅 빈 파일명이 추출되는 최악의 경우에 대비한 안전장치
-            if not title:
-                print("❌ 유효한 곡 제목(파일명)을 찾을 수 없어 업데이트를 건너뜁니다.")
-                return
+    on_modified = on_created
 
-            print(f"\n🚀 [작업 시작] '{title}' 정보 수집 및 업데이트를 진행합니다.")
+    def on_moved(self, event):
+        if not event.is_directory:
+            self.schedule(event.dest_path)
 
-            status_msg = "> ⏳ **AI가 인터넷 검색을 통해 곡 정보와 가사를 수집하는 중입니다... 잠시만 기다려주세요!**\n\n"
-            if status_msg not in content:
-                if content.startswith("---"):
-                    end_idx = content.find("\n---", 3)
-                    if end_idx != -1:
-                        insert_pos = end_idx + 4
-                        content = content[:insert_pos] + "\n\n" + status_msg + content[insert_pos:]
-                    else:
-                        content = status_msg + content
-                else:
-                    content = status_msg + content
-                    
-                with open(filepath, 'w', encoding='utf-8') as f:
-                    f.write(content)
-
-            search_query = get_search_query(title)
-            raw_lyrics = scrape_multiple_sources(search_query)
-            # 함수를 호출해서 쓰는 부분
-            ai_result = generate_ai_content(title, raw_lyrics)
-            
-            content = content.replace("\n\n" + status_msg, "").replace(status_msg, "")
-            
-            # 텅 빈 값(None)이 돌아왔을 때의 안전장치
-            if not ai_result:
-                print("❌ AI 분석에 실패하여 파일 업데이트를 건너뜁니다.")
-                with open(filepath, 'w', encoding='utf-8') as f:
-                    f.write(content)
-                return  # (루프 안이라면 continue)
-            
-            # 1. 문자열 속성 채우기
-            str_keys = ['vocal', 'group', 'album', 'original_song', 'original_artist', 'description']
-            for key in str_keys:
-                if re.search(rf'^{key}:\s*(?:(?:\"\")|(?:\'\')|(?:\s*))$', content, re.MULTILINE):
-                    val = extract_property(key, ai_result)
-                    if val:
-                        content = re.sub(rf'^({key}:).*$', rf'\1 "{val}"', content, flags=re.MULTILINE)
-                        
-            # 2. 리스트 속성 채우기
-            list_keys = ['lyricist', 'composer', 'arranger', 'genre', 'mood']
-            for key in list_keys:
-                if re.search(rf'^{key}:\s*(?:(?:\"\")|(?:\'\')|(?:\s*)|(?:\[\]))$', content, re.MULTILINE):
-                    val = extract_property(key, ai_result)
-                    if val:
-                        items = [i.strip() for i in val.split(',') if i.strip()]
-                        if items:
-                            list_str = f"{key}:\n" + "\n".join([f"  - {item}" for item in items])
-                            content = re.sub(rf'^{key}:\s*(?:(?:\"\")|(?:\'\')|(?:\s*)|(?:\[\]))$', list_str, content, flags=re.MULTILINE)
-            
-            # 3. 태그(tags) 추가하기
-            tags_val = extract_property('tags', ai_result)
-            if tags_val:
-                tags_list = [re.sub(r'^[-#\s]*', '', t).strip() for t in tags_val.split(',') if t.strip()]
-                if tags_list:
-                    tags_match = re.search(r'(tags:\n(?:  - .*\n)*)', content)
-                    if tags_match:
-                        existing_tags = tags_match.group(1)
-                        new_tags_str = ""
-                        for t in tags_list:
-                            if t and f"- {t}" not in existing_tags:
-                                new_tags_str += f"  - {t}\n"
-                        if new_tags_str:
-                            content = content.replace(existing_tags, existing_tags + new_tags_str)
-
-            # 4. 본문 곡 정보 채우기
-            story_match = re.search(r'(- \*\*핵심 서사\*\*\n)([\s\S]*?)(?=- \*\*음악적 특징\*\*)', content)
-            if story_match and not story_match.group(2).strip():
-                story = extract_section('story', ai_result)
-                story_lines = [line.lstrip('-* ') for line in story.split('\n') if line.strip()]
-                story_indented = "\n".join([f"  {line}" for line in story_lines])
-                content = content.replace(story_match.group(0), f"- **핵심 서사**\n{story_indented}\n\n")
-                
-            features_match = re.search(r'(- \*\*음악적 특징\*\*\n)([\s\S]*?)(?=## 🎤 가사)', content)
-            if features_match and not features_match.group(2).strip():
-                features = extract_section('features', ai_result)
-                features_lines = [line.lstrip('-* ') for line in features.split('\n') if line.strip()]
-                features_indented = "\n".join([f"  {line}" for line in features_lines])
-                content = content.replace(features_match.group(0), f"- **음악적 특징**\n{features_indented}\n\n")
-            
-            # 5. 가사 채우기
-            lyrics_match = re.search(r'(``` title=".*?"\n)([\s\S]*?)(```)', content)
-            if lyrics_match and not lyrics_match.group(2).strip():
-                lyrics = extract_section('lyrics', ai_result)
-                content = content.replace(lyrics_match.group(0), f"{lyrics_match.group(1)}{lyrics}\n{lyrics_match.group(3)}")
-            
-            with open(filepath, 'w', encoding='utf-8') as f:
-                f.write(content)
-                
-            print(f"✨ [작업 완료] [{title}] 노트 맞춤형 업데이트 완료! 옵시디언을 확인해 보세요.")
-            
-        except Exception as e:
-            print(f"❌ 노트 업데이트 중 오류 발생: {e}")
-    
-    def update_lyrics_only(self, filepath):
-        try:
-            with open(filepath, 'r', encoding='utf-8') as f:
-                content = f.read()
-
-            title = os.path.splitext(os.path.basename(filepath))[0].strip()
-            if title:
-                title = re.sub(r'^\[.*?\]\s*', '', title)
-                title = title.split('](http')[0].strip()
-                title = re.sub(r'\(?https?://[^\s)]+\)?', '', title).strip()
-
-            if not title:
-                print("❌ 파일명에서 곡 제목을 찾을 수 없어요.")
-                return
-
-            lyrics_match = re.search(r'(``` title=".*?"\n)([\s\S]*?)(```)', content)
-            if not lyrics_match:
-                print("❌ 가사 코드 블록(``` title=...)을 찾을 수 없어요.")
-                return
-
-            print(f"\n🎤 [가사 단독 수정 시작] '{title}' 가사를 다시 수집합니다.")
-            search_query = get_search_query(title)
-            raw_lyrics = scrape_multiple_sources(search_query)
-
-            # 가사 전용 프롬프트로 AI 호출
-            prompt_text = get_lyrics_only_prompt(title, raw_lyrics)
-            ai_result = None
-            for current_model in FALLBACK_MODELS:
-                try:
-                    print(f"  -> 🤖 가사 재생성 중... (모델: {current_model})")
-                    resp = client.models.generate_content(model=current_model, contents=prompt_text)
-                    ai_result = resp.text
+    def _run(self):
+        while not stop_event.wait(0.25):
+            with self.guard:
+                paths = [p for p, deadline in self.pending.items() if deadline <= time.monotonic()]
+                for path in paths:
+                    self.pending.pop(path, None)
+            for path in paths:
+                if stop_event.is_set():
                     break
-                except Exception as e:
-                    print(f"    - ⚠️ [{current_model}] 오류: {e}")
-                    continue
+                try:
+                    content = Path(path).read_text(encoding='utf-8')
+                    if ready(content) and path not in self.attempted:
+                        self.update_note(path)
+                except OSError:
+                    pass
 
-            if not ai_result:
-                print("❌ 가사 재생성에 실패했어요.")
-                return
+    def update_note(self, filepath):
+        return self._update(filepath, False)
 
-            new_lyrics = extract_section('lyrics', ai_result)
-            if not new_lyrics:
-                print("❌ AI 응답에서 가사 섹션을 추출하지 못했어요.")
-                return
+    def update_lyrics_only(self, filepath):
+        return self._update(filepath, True)
 
-            # 기존 가사 내용 유무와 상관없이 새 가사로 덮어쓰기
-            content = content.replace(lyrics_match.group(0), f"{lyrics_match.group(1)}{new_lyrics}\n{lyrics_match.group(3)}")
+    def _update(self, filepath, lyrics_only):
+        path = os.path.normcase(os.path.abspath(filepath))
+        with self.guard:
+            lock = self.locks.setdefault(path, threading.Lock())
+        with lock:
+            try:
+                original = Path(path).read_bytes()
+                content = original.decode('utf-8').replace('\r\n', '\n')
+                if not ready(content):
+                    print('템플릿이 미완성이거나 Music.md 형식이 아닙니다. 저장하지 않습니다.')
+                    return False
+                # An automatic attempt is made once per path per session; manual repair can retry.
+                self.attempted[path] = True
+                title = song_title(content, path)
+                if not title or stop_event.is_set():
+                    return False
+                print(f'정보 수집 중: {title}')
+                query = get_search_query(title)
+                if stop_event.is_set():
+                    return False
+                raw = scrape_multiple_sources(query or title)
+                if not raw or stop_event.is_set():
+                    print('가사 자료 수집 실패: 기존 노트를 유지합니다.')
+                    return False
+                if lyrics_only:
+                    result = None
+                    for model in FALLBACK_MODELS:
+                        try:
+                            result = generate_text(get_lyrics_only_prompt(title, raw), model).text
+                            if result:
+                                break
+                        except Exception as exc:
+                            print(f'모델 호출 실패: {exc}')
+                else:
+                    result = generate_ai_content(title, raw)
+                if not result or stop_event.is_set():
+                    return False
+                updated = render_note(content, result, lyrics_only)
+                if b'\r\n' in original:
+                    updated = updated.replace('\n', '\r\n')
+                atomic_save(path, original, updated.encode('utf-8'))
+                print(f'처리 완료: {title}')
+                return True
+            except Exception as exc:
+                print(f'노트 업데이트 중단: {exc}')
+                return False
 
-            with open(filepath, 'w', encoding='utf-8') as f:
-                f.write(content)
+    def close(self):
+        stop_event.set()
+        self.worker.join()
 
-            print(f"✨ [가사 수정 완료] [{title}] 가사 블록이 새로 갱신되었어요!")
+# --- 7. Obsidian 실행 여부 확인 ---
+OBSIDIAN_CHECK_INTERVAL = 5  # 초
 
-        except Exception as e:
-            print(f"❌ 가사 수정 중 오류 발생: {e}")
+def is_obsidian_running():
+    """Obsidian 프로세스가 실행 중인지 확인합니다."""
+    try:
+        if sys.platform == "win32":
+            out = subprocess.run(
+                ["tasklist", "/FI", "IMAGENAME eq Obsidian.exe", "/NH"],
+                capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW
+            ).stdout
+            return "obsidian.exe" in out.lower()
+        return subprocess.run(["pgrep", "-xi", "obsidian"], capture_output=True).returncode == 0
+    except Exception:
+        # 확인 자체가 불가능하면 스크립트를 막지 않도록 실행 중으로 간주
+        return True
 
-# --- 7. 메인 실행부 ---
+def launch_obsidian(timeout=30):
+    """Obsidian을 실행하고, 프로세스가 뜰 때까지 기다립니다. 성공 여부를 반환합니다."""
+    try:
+        if sys.platform == "win32":
+            os.startfile("obsidian://")  # 설치 시 등록되는 URI 프로토콜 사용
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", "-a", "Obsidian"])
+        else:
+            subprocess.Popen(["obsidian"])
+    except Exception as e:
+        print(f"❌ Obsidian 실행 실패: {e}")
+        return False
+
+    for _ in range(timeout):
+        if is_obsidian_running():
+            return True
+        time.sleep(1)
+    return False
+
+def watch_obsidian(observer):
+    """Obsidian이 종료되면 감시를 멈추고 스크립트를 종료합니다."""
+    while not stop_event.wait(OBSIDIAN_CHECK_INTERVAL):
+        if not is_obsidian_running():
+            print("\n🛑 Obsidian이 종료되어 스크립트를 함께 종료합니다.")
+            observer.stop()
+            stop_event.set()
+            return
+
+console_lines = queue.Queue()
+
+
+def read_console():
+    while True:
+        line = sys.stdin.readline()
+        console_lines.put(line)
+        if not line:
+            return
+
+
+def read_input(prompt=""):
+    if prompt:
+        print(prompt, end="", flush=True)
+    while not stop_event.is_set():
+        try:
+            line = console_lines.get(timeout=0.2)
+            if not line:
+                raise EOFError
+            return line.rstrip('\r\n')
+        except queue.Empty:
+            pass
+    raise EOFError
+
+# --- 8. 메인 실행부 ---
 if __name__ == "__main__":
-    target_folder = os.environ.get("OBSIDIAN_FOLDER_PATH") 
-    
+    if not GEMINI_API_KEY or not FALLBACK_MODELS:
+        sys.exit(".env의 GEMINI_API_KEY 및 GEMINI_FALLBACK_MODELS를 확인하세요.")
+    threading.Thread(target=read_console, daemon=True).start()
+    if not is_obsidian_running():
+        print("🚀 Obsidian이 꺼져 있어 자동으로 실행합니다...")
+        if not launch_obsidian():
+            print("❌ Obsidian을 실행하지 못했어요. 직접 켠 뒤 다시 실행해 주세요.")
+            sys.exit(1)
+        time.sleep(3)  # 볼트 로딩 여유 시간
+
+    target_folder = os.environ.get("OBSIDIAN_FOLDER_PATH")
+
     if not target_folder:
         print("❌ .env 파일에서 OBSIDIAN_FOLDER_PATH를 찾을 수 없어요.")
         exit()
@@ -408,19 +409,20 @@ if __name__ == "__main__":
     observer = Observer()
     observer.schedule(handler, target_folder, recursive=True)
     observer.start()
-    
+    threading.Thread(target=watch_obsidian, args=(observer,), daemon=True).start()
+
     print(f"🎧 [{target_folder}]\n템플릿 감시를 자동으로 시작했습니다.")
     print("💡 복구 모드 선택: 전체 수동 복구('2') | 가사만 다시 수정('3') | 종료('q')")
 
     try:
         while True:
             # 백그라운드에서 감시가 돌아가는 동안, 메인 화면은 사용자의 입력을 조용히 기다립니다.
-            choice = input().strip()
+            choice = read_input().strip()
             
             if choice == '2':
                 # 올바른 경로를 입력할 때까지 반복해서 묻는 내부 루프
                 while True:
-                    filepath = input("\n[수동 복구 모드] 복구할 파일명(또는 전체 경로)을 입력해 주세요 (취소는 'c'):\n").strip()
+                    filepath = read_input("\n[수동 복구 모드] 복구할 파일명(또는 전체 경로)을 입력해 주세요 (취소는 'c'):\n").strip()
                     
                     if filepath.lower() == 'c':
                         print("수동 복구를 취소했습니다. 계속해서 폴더를 감시합니다.\n")
@@ -434,7 +436,6 @@ if __name__ == "__main__":
 
                     if os.path.exists(filepath) and filepath.endswith('.md'):
                         handler.update_note(filepath)
-                        print("✅ 수동 복구 완료! 다시 폴더 감시 상태로 돌아갑니다.\n")
                         break  # 성공적으로 마쳤으니 내부 루프 탈출
                     else:
                         print("❌ 파일을 찾을 수 없거나 마크다운(.md) 파일이 아닙니다. 경로를 다시 확인해 주세요.")
@@ -442,7 +443,7 @@ if __name__ == "__main__":
 
             elif choice == '3':
                 while True:
-                    filepath = input("\n[가사 전용 수정] 수정할 파일명(또는 경로)을 입력하세요 (취소: 'c'):\n").strip()
+                    filepath = read_input("\n[가사 전용 수정] 수정할 파일명(또는 경로)을 입력하세요 (취소: 'c'):\n").strip()
                     if filepath.lower() == 'c':
                         print("가사 수정을 취소했습니다. 감시 모드로 돌아갑니다.\n")
                         break
@@ -467,4 +468,7 @@ if __name__ == "__main__":
         print("\n스크립트를 안전하게 종료합니다.")
         observer.stop()
         
+    stop_event.set()
+    observer.stop()
     observer.join()
+    handler.close()
