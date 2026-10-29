@@ -2,6 +2,7 @@ import os
 import sys
 import subprocess
 import threading
+import json
 import queue
 from pathlib import Path
 from note_format import ready, song_title, render_note, atomic_save, extract_property, extract_section
@@ -330,30 +331,69 @@ def is_obsidian_running():
         # 확인 자체가 불가능하면 스크립트를 막지 않도록 실행 중으로 간주
         return True
 
-def launch_obsidian(timeout=30):
-    """Obsidian을 실행하고, 프로세스가 뜰 때까지 기다립니다. 성공 여부를 반환합니다."""
+def _obsidian_vaults():
+    """Obsidian이 관리하는 볼트 목록(obsidian.json)을 읽어 옵니다."""
+    if sys.platform == "win32":
+        base = os.environ.get("APPDATA", "")
+    elif sys.platform == "darwin":
+        base = os.path.expanduser("~/Library/Application Support")
+    else:
+        base = os.path.expanduser("~/.config")
+    with open(os.path.join(base, "obsidian", "obsidian.json"), encoding="utf-8") as f:
+        return list(json.load(f).get("vaults", {}).values())
+
+def _same_or_inside(path, parent):
+    try:
+        return os.path.commonpath([os.path.normcase(os.path.abspath(path)),
+                                   os.path.normcase(os.path.abspath(parent))]) == os.path.normcase(os.path.abspath(parent))
+    except ValueError:  # 드라이브가 다른 경우
+        return False
+
+def find_vault_path(folder):
+    """감시 폴더가 속한 볼트의 경로를 찾습니다. (가장 깊은 경로 우선, 없으면 None)"""
+    try:
+        paths = [v["path"] for v in _obsidian_vaults() if _same_or_inside(folder, v["path"])]
+    except Exception:
+        return None
+    return max(paths, key=len) if paths else None
+
+def is_vault_open(vault_path):
+    """Obsidian이 켜져 있고, 해당 볼트가 열려 있는지 확인합니다."""
+    if not is_obsidian_running():
+        return False
+    if not vault_path:
+        return True  # 볼트를 특정할 수 없으면 프로세스 확인만 수행
+    try:
+        return any(_same_or_inside(v["path"], vault_path) and _same_or_inside(vault_path, v["path"]) and v.get("open")
+                   for v in _obsidian_vaults())
+    except Exception:
+        return True  # obsidian.json을 읽지 못하면 스크립트를 막지 않음
+
+def launch_obsidian(vault_path=None, timeout=30):
+    """Obsidian(가능하면 해당 볼트)을 열고, 열릴 때까지 기다립니다. 성공 여부를 반환합니다."""
+    url = "obsidian://open?path=" + urllib.parse.quote(vault_path, safe="") if vault_path else "obsidian://"
     try:
         if sys.platform == "win32":
-            os.startfile("obsidian://")  # 설치 시 등록되는 URI 프로토콜 사용
+            os.startfile(url)  # 설치 시 등록되는 URI 프로토콜 사용
         elif sys.platform == "darwin":
-            subprocess.Popen(["open", "-a", "Obsidian"])
+            subprocess.Popen(["open", url])
         else:
-            subprocess.Popen(["obsidian"])
+            subprocess.Popen(["xdg-open", url])
     except Exception as e:
         print(f"❌ Obsidian 실행 실패: {e}")
         return False
 
     for _ in range(timeout):
-        if is_obsidian_running():
+        if is_vault_open(vault_path):
             return True
         time.sleep(1)
     return False
 
-def watch_obsidian(observer):
-    """Obsidian이 종료되면 감시를 멈추고 스크립트를 종료합니다."""
+def watch_obsidian(observer, vault_path=None):
+    """대상 볼트(또는 Obsidian)가 닫히면 감시를 멈추고 스크립트를 종료합니다."""
     while not stop_event.wait(OBSIDIAN_CHECK_INTERVAL):
-        if not is_obsidian_running():
-            print("\n🛑 Obsidian이 종료되어 스크립트를 함께 종료합니다.")
+        if not is_vault_open(vault_path):
+            print("\n🛑 대상 볼트가 닫혀 스크립트를 함께 종료합니다.")
             observer.stop()
             stop_event.set()
             return
@@ -393,18 +433,21 @@ if __name__ == "__main__":
     if not GEMINI_API_KEY or not FALLBACK_MODELS:
         sys.exit(".env의 GEMINI_API_KEY 및 GEMINI_FALLBACK_MODELS를 확인하세요.")
     threading.Thread(target=read_console, daemon=True).start()
-    if not is_obsidian_running():
-        print("🚀 Obsidian이 꺼져 있어 자동으로 실행합니다...")
-        if not launch_obsidian():
-            print("❌ Obsidian을 실행하지 못했어요. 직접 켠 뒤 다시 실행해 주세요.")
-            sys.exit(1)
-        time.sleep(3)  # 볼트 로딩 여유 시간
-
     target_folder = os.environ.get("OBSIDIAN_FOLDER_PATH")
 
     if not target_folder:
         print("❌ .env 파일에서 OBSIDIAN_FOLDER_PATH를 찾을 수 없어요.")
         exit()
+
+    vault_path = find_vault_path(target_folder)
+    if vault_path is None:
+        print("⚠️ 감시 폴더가 속한 볼트를 Obsidian 설정에서 찾지 못했어요. 프로세스 실행 여부만 확인합니다.")
+    if not is_vault_open(vault_path):
+        print(f"🚀 대상 볼트가 열려 있지 않아 자동으로 엽니다... ({vault_path or 'Obsidian'})")
+        if not launch_obsidian(vault_path):
+            print("❌ 대상 볼트를 열지 못했어요. 직접 연 뒤 다시 실행해 주세요.")
+            sys.exit(1)
+        time.sleep(3)  # 볼트 로딩 여유 시간
 
     if not os.path.exists(target_folder):
         os.makedirs(target_folder)
@@ -420,7 +463,7 @@ if __name__ == "__main__":
     observer = Observer()
     observer.schedule(handler, target_folder, recursive=True)
     observer.start()
-    threading.Thread(target=watch_obsidian, args=(observer,), daemon=True).start()
+    threading.Thread(target=watch_obsidian, args=(observer, vault_path), daemon=True).start()
 
     print(f"🎧 [{target_folder}]\n템플릿 감시를 자동으로 시작했습니다.")
     print("💡 전체 수동 복구(2) | 가사 재수정(3) | 새 곡 확인(4) | 대기 곡 선택·생성(5) | 종료(q)")
